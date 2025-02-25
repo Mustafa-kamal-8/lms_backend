@@ -37,13 +37,31 @@ exports.getCourses = async (req, res) => {
     }
 };
 
+exports.getCourseById = async (req, res) => {
+    const { courseId } = req.body;
+
+    try {
+        const [course] = await db.execute(
+            'SELECT * FROM courses WHERE id = ?',
+            [courseId]
+        );
+
+        if (course.length === 0) {
+            return res.status(404).json({ error: 'Course not found' });
+        }
+
+        res.json({ data: course[0] });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+
 
 exports.editCourse = async (req, res) => {
-    const { courseId } = req.params;
+    const { courseId } = req.body;
     const { course_name, course_code } = req.body;
-    const { role } = req.user;
-
-    if (role !== 1) return res.status(403).json({ error: 'Unauthorized' });
+  
 
     try {
         await db.execute(
@@ -57,18 +75,23 @@ exports.editCourse = async (req, res) => {
 };
 
 exports.deleteCourse = async (req, res) => {
-    const { courseId } = req.params;
-    const { role } = req.user;
+    const { courseId } = req.body;
 
-    if (role !== 1) return res.status(403).json({ error: 'Unauthorized' });
+    // Debugging Log
+    console.log("Received request body:", req.body);
+
+    if (!courseId) {
+        return res.status(400).json({ error: "courseId is required" });
+    }
 
     try {
-        await db.execute('DELETE FROM courses WHERE id = ?', [courseId]);
-        res.json({ message: 'Course Deleted Successfully' });
+        await db.execute("DELETE FROM courses WHERE id = ?", [courseId]);
+        res.json({ message: "Course Deleted Successfully" });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 };
+
 
 exports.addInstructor = async (req, res) => {
     const { courseId, instructorId } = req.body;
@@ -148,36 +171,37 @@ exports.joinCourse = async (req, res) => {
 
 
 exports.uploadTeachersExcel = async (req, res) => {
-    upload.single('file')(req, res, async function (err) {
-        if (err) {
-            return res.status(500).json({ error: 'File upload failed' });
+    upload.single("file")(req, res, async function (err) {
+      if (err) {
+        return res.status(500).json({ error: "File upload failed" });
+      }
+  
+      if (!req.file) {
+        return res.status(400).json({ error: "No file uploaded" });
+      }
+  
+      try {
+        const workbook = xlsx.readFile(req.file.path);
+        const sheetName = workbook.SheetNames[0];
+        const data = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
+  
+        for (const row of data) {
+          const { email, course_id } = row;
+          const [users] = await db.execute("SELECT id FROM users WHERE email = ?", [email]);
+  
+          if (users.length > 0) {
+            const instructor_id = users[0].id;
+            await db.execute(
+              "INSERT INTO course_instructors (course_id, instructor_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE course_id = VALUES(course_id)",
+              [course_id, instructor_id]
+            );
+          }
         }
-
-        if (!req.file) {
-            return res.status(400).json({ error: 'No file uploaded' });
-        }
-
-        try {
-            const workbook = xlsx.readFile(req.file.path);
-            const sheetName = workbook.SheetNames[0];
-            const data = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
-            
-            for (const row of data) {
-                const { email, course_id } = row;
-                const [users] = await db.execute('SELECT id FROM users WHERE email = ?', [email]);
-                if (users.length > 0) {
-                    const instructor_id = users[0].id;
-                    await db.execute(
-                        'INSERT INTO course_instructors (course_id, instructor_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE course_id = VALUES(course_id)',
-                        [course_id, instructor_id]
-                    );
-                }
-            }
-            
-            fs.unlinkSync(req.file.path);
-            res.json({ message: 'Teachers uploaded successfully' });
-        } catch (error) {
-            res.status(500).json({ error: error.message });
-        }
+  
+        fs.unlinkSync(req.file.path);
+        res.json({ message: "Teachers uploaded successfully" });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
     });
-};
+  };
