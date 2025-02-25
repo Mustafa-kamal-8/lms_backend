@@ -3,25 +3,31 @@ const db = require('../config/db');
 
 
 exports.postNotice = async (req, res) => {
-  const { courseId, message } = req.body;
+  const { courseId, message, instructorId } = req.body;
   const { id } = req.user;
-  const file = req.file; // Uploaded file
+  const file = req.file;
 
+  console.log("Request Body:", req.body); // Debugging step
+
+  // Check for undefined values
+  if (!courseId || !message || !instructorId) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
 
   try {
-    // Check if a file was uploaded
     const filePath = file ? `uploads/${file.filename}` : null;
 
     await db.execute(
-      "INSERT INTO notices (course_id, posted_by, message, file_path) VALUES (?, ?, ?, ?)",
-      [courseId, id, message, filePath]
+      "INSERT INTO notices (course_id, posted_by, instructorId, message, file_path) VALUES (?, ?, ?, ?, ?)",
+      [courseId, id, instructorId, message, filePath]
     );
 
-    res.json({ message: "Notice Posted Successfully", filePath });
+    res.json({ message: "Notice Posted Successfully", filePath, instructorId });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
+
 
 
 // Instructor: View Notices
@@ -51,6 +57,34 @@ exports.replyToNotice = async (req, res) => {
     }
 };
 
+exports.getInstructorNotices = async (req, res) => {
+  try {
+    const instructorId = req.user.id;
+
+    if (!instructorId) {
+      return res.status(401).json({ message: "Unauthorized. User not found." });
+    }
+
+    // Check if instructor ID exists in the notices table
+    const [notices] = await db.execute(
+      `SELECT n.id AS notice_id, n.message, n.created_at, c.course_name 
+       FROM notices n
+       JOIN courses c ON n.course_id = c.id
+       WHERE n.instructorId = ?`,
+      [instructorId]
+    );
+
+    if (notices.length === 0) {
+      return res.status(404).json({ message: "No notices found for this instructor." });
+    }
+
+    res.status(200).json({ message: "Notices fetched successfully", notices });
+  } catch (error) {
+    console.error("Error fetching notices:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
 
 exports.getNotices = async (req, res) => {
   try {
@@ -60,40 +94,44 @@ exports.getNotices = async (req, res) => {
       return res.status(401).json({ message: "Unauthorized. User not found." });
     }
 
-    // Check if instructor is assigned to any course
+    // Fetch courses assigned to the instructor
     const [assignedCourses] = await db.execute(
       `SELECT course_id FROM course_instructors WHERE instructor_id = ?`,
       [instructorId]
     );
 
-    // Check if instructor has posted any notices
+    // Fetch notices posted by the instructor
     const [postedNotices] = await db.execute(
       `SELECT DISTINCT course_id FROM notices WHERE posted_by = ?`,
       [instructorId]
     );
 
-    // If instructor is not found in either table, deny access
-    if (assignedCourses.length === 0 && postedNotices.length === 0) {
+    // Merge unique course IDs from both sources
+    const courseIds = [
+      ...new Set([...assignedCourses.map(c => c.course_id), ...postedNotices.map(n => n.course_id)]),
+    ];
+
+    // If the instructor has no relevant courses or notices, deny access
+    if (courseIds.length === 0) {
       return res.status(403).json({ message: "Access denied. No relevant notices found." });
     }
 
-    // Merge course IDs from both tables (to fetch notices)
-    const courseIds = [
-      ...new Set([...assignedCourses.map(c => c.course_id), ...postedNotices.map(n => n.course_id)])
-    ];
-
-    // Fetch notices for these courses or posted by the instructor
-    const [notices] = await db.execute(
-      `SELECT 
+    // Construct SQL query dynamically
+    let query = `
+      SELECT 
           notices.id AS notice_id,
           notices.message,
           notices.file_path,
           courses.course_name
-       FROM notices
-       JOIN courses ON notices.course_id = courses.id
-       WHERE notices.course_id IN (?) OR notices.posted_by = ?`,
-      [courseIds, instructorId]
-    );
+      FROM notices
+      JOIN courses ON notices.course_id = courses.id
+      WHERE ${courseIds.length > 0 ? "notices.course_id IN (?) OR" : ""} notices.posted_by = ?
+    `;
+
+    const params = courseIds.length > 0 ? [courseIds, instructorId] : [instructorId];
+
+    // Execute query
+    const [notices] = await db.execute(query, params);
 
     res.status(200).json({ message: "Notices fetched successfully", notices });
   } catch (error) {
@@ -101,6 +139,7 @@ exports.getNotices = async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 };
+
 
 exports.getNoticeReplies = async (req, res) => {
   const { noticeId } = req.body;
